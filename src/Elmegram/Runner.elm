@@ -1,4 +1,4 @@
-module Elmegram.Runner exposing (BotHandle, BotInit, BotUpdate, ErrorPort, IncomingUpdatePort, MethodPort, bot)
+module Elmegram.Runner exposing (BotInit, BotUpdate, ErrorPort, IncomingUpdatePort, MethodPort, bot)
 
 import Elmegram exposing (..)
 import Json.Decode as Decode
@@ -10,8 +10,8 @@ type alias BotInit model =
     Telegram.User -> model
 
 
-type alias BotHandle model msg =
-    Telegram.Update -> model -> Response model msg
+type alias BotNewUpdateMsg msg =
+    Telegram.Update -> msg
 
 
 type alias BotUpdate model msg =
@@ -32,7 +32,7 @@ type alias ErrorPort msg =
 
 bot :
     { init : BotInit model
-    , handle : BotHandle model msg
+    , newUpdateMsg : BotNewUpdateMsg msg
     , update : BotUpdate model msg
     , incomingUpdatePort : IncomingUpdatePort (Msg msg)
     , methodPort : MethodPort (Msg msg)
@@ -42,7 +42,7 @@ bot :
 bot config =
     Platform.worker
         { init = init config.init
-        , update = update config.handle config.update config.methodPort config.errorPort
+        , update = update config.newUpdateMsg config.update config.methodPort config.errorPort
         , subscriptions = subscriptions config.incomingUpdatePort
         }
 
@@ -85,11 +85,11 @@ type Msg botMsg
     | BotMsg botMsg
 
 
-update : BotHandle model botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> Msg botMsg -> model -> ( model, Cmd (Msg botMsg) )
-update botHandle botUpdate methodPort errorPort msg model =
+update : BotNewUpdateMsg botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> Msg botMsg -> model -> ( model, Cmd (Msg botMsg) )
+update botNewUpdateMsg botUpdate methodPort errorPort msg model =
     case msg of
         NewUpdate result ->
-            processUpdate botHandle methodPort errorPort result model
+            processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model
 
         BotMsg botMsg ->
             botUpdate botMsg model
@@ -100,14 +100,14 @@ type alias UpdateResult =
     Result Decode.Error Telegram.Update
 
 
-processUpdate : BotHandle model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> UpdateResult -> model -> ( model, Cmd (Msg botMsg) )
-processUpdate updateHandler methodPort errorPort result model =
+processUpdate : BotNewUpdateMsg botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> UpdateResult -> model -> ( model, Cmd (Msg botMsg) )
+processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model =
     case result of
         Err err ->
             ( model, Decode.errorToString err |> errorPort )
 
         Ok newUpdate ->
-            updateHandler newUpdate model
+            botUpdate (botNewUpdateMsg newUpdate) model
                 |> updateFromResponse methodPort
 
 
