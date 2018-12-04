@@ -263,7 +263,7 @@ methodFromInlineQuery =
 -- ANSWER CALLBACK QUERIES
 
 
-makeAnswerCallbackQuery: Telegram.CallbackQuery -> Telegram.AnswerCallbackQuery
+makeAnswerCallbackQuery : Telegram.CallbackQuery -> Telegram.AnswerCallbackQuery
 makeAnswerCallbackQuery to =
     { callback_query_id = to.id
     , text = Nothing
