@@ -9,7 +9,8 @@
         "Elmegram.Runner"
     ],
     "source-directories": [
-        "src"
+        "src",
+        "packages/telegram/src"
     ],
     "elm-version": "0.19.0 <= v < 0.20.0",
     "dependencies": {
