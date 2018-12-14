@@ -1,9 +1,16 @@
-module Elmegram.Runner exposing (BotInit, BotUpdate, ErrorPort, IncomingUpdatePort, MethodPort, bot)
+module Elmegram.Runner exposing (BotInit, BotUpdate, ErrorPort, IncomingUpdatePort, MethodPort, botRunner)
 
 import Elmegram exposing (..)
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Telegram
+
+
+type alias Bot model msg =
+    { init : BotInit model
+    , newUpdateMsg : BotNewUpdateMsg msg
+    , update : BotUpdate model msg
+    }
 
 
 type alias BotInit model =
@@ -30,20 +37,19 @@ type alias ErrorPort msg =
     String -> Cmd msg
 
 
-bot :
-    { init : BotInit model
-    , newUpdateMsg : BotNewUpdateMsg msg
-    , update : BotUpdate model msg
-    , incomingUpdatePort : IncomingUpdatePort (Msg msg)
-    , methodPort : MethodPort (Msg msg)
-    , errorPort : ErrorPort (Msg msg)
-    }
+botRunner :
+    Bot model msg
+    ->
+        { incomingUpdatePort : IncomingUpdatePort (Msg msg)
+        , methodPort : MethodPort (Msg msg)
+        , errorPort : ErrorPort (Msg msg)
+        }
     -> Platform.Program RawUser model (Msg msg)
-bot config =
+botRunner bot ports =
     Platform.worker
-        { init = init config.init
-        , update = update config.newUpdateMsg config.update config.methodPort config.errorPort
-        , subscriptions = subscriptions config.incomingUpdatePort
+        { init = init bot.init
+        , update = update bot.newUpdateMsg bot.update ports.methodPort ports.errorPort
+        , subscriptions = subscriptions ports.incomingUpdatePort
         }
 
 
