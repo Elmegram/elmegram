@@ -8,10 +8,6 @@
         "Elmegram",
         "Elmegram.Runner"
     ],
-    "source-directories": [
-        "src",
-        "packages/telegram/src"
-    ],
     "elm-version": "0.19.0 <= v < 0.20.0",
     "dependencies": {
         "elm/browser": "1.0.1 <= v < 2.0.0",
