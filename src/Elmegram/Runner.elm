@@ -44,46 +44,31 @@ botRunner :
         , methodPort : MethodPort (Msg msg)
         , errorPort : ErrorPort (Msg msg)
         }
-    -> Platform.Program RawUser model (Msg msg)
+    -> Platform.Program Encode.Value (Model model) (Msg msg)
 botRunner bot ports =
     Platform.worker
-        { init = init bot.init
+        { init = init bot.init ports.errorPort
         , update = update bot.newUpdateMsg bot.update ports.methodPort ports.errorPort
         , subscriptions = subscriptions ports.incomingUpdatePort
         }
 
 
-{-| Simple type without custom types. This can be used by init, forcing errors
-on the JS side instead of in a Decoder.
-
-The only difference to `Telegram.User` is the id field. The real user has
-a phantom type that guards against mixing incompatible ids.
-
--}
-type alias RawUser =
-    { id : Int
-    , is_bot : Bool
-    , first_name : String
-    , last_name : Maybe String
-    , username : Maybe String
-    , language_code : Maybe String
-    }
+type alias Model botModel =
+    Maybe botModel
 
 
-init : BotInit model -> RawUser -> ( model, Cmd (Msg botMsg) )
-init botInit rawBot =
+init : BotInit model -> ErrorPort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMsg) )
+init botInit errorPort flags =
     let
-        self =
-            -- Small hack to make type safe ID.
-            { id = Telegram.makeTestId rawBot.id
-            , is_bot = rawBot.is_bot
-            , first_name = rawBot.first_name
-            , last_name = rawBot.last_name
-            , username = rawBot.username
-            , language_code = rawBot.language_code
-            }
+        selfResult =
+            Decode.decodeValue Telegram.decodeUser flags
     in
-    ( botInit self, Cmd.none )
+    case selfResult of
+        Ok self ->
+            ( Just <| botInit self, Cmd.none )
+
+        Err error ->
+            ( Nothing, errorPort <| Decode.errorToString error )
 
 
 type Msg botMsg
@@ -91,15 +76,22 @@ type Msg botMsg
     | BotMsg botMsg
 
 
-update : BotNewUpdateMsg botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> Msg botMsg -> model -> ( model, Cmd (Msg botMsg) )
-update botNewUpdateMsg botUpdate methodPort errorPort msg model =
-    case msg of
-        NewUpdate result ->
-            processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model
+update : BotNewUpdateMsg botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> Msg botMsg -> Model model -> ( Model model, Cmd (Msg botMsg) )
+update botNewUpdateMsg botUpdate methodPort errorPort msg maybeModel =
+    case maybeModel of
+        Just model ->
+            case msg of
+                NewUpdate result ->
+                    processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model
+                        |> Tuple.mapFirst Just
 
-        BotMsg botMsg ->
-            botUpdate botMsg model
-                |> updateFromResponse methodPort
+                BotMsg botMsg ->
+                    botUpdate botMsg model
+                        |> updateFromResponse methodPort
+                        |> Tuple.mapFirst Just
+
+        Nothing ->
+            ( Nothing, Cmd.none )
 
 
 type alias UpdateResult =
