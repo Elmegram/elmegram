@@ -48,26 +48,26 @@ type Method
     | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
 
 
-encodeMethod : Method -> Encode.Value
+encodeMethod : Method -> { methodName : String, content : Encode.Value }
 encodeMethod method =
     case method of
         SendMessageMethod sendMessage ->
-            Encode.object
-                [ ( "method", Encode.string "sendMessage" )
-                , ( "content", Telegram.encodeSendMessage sendMessage )
-                ]
+            { methodName = "sendMessage"
+            , content =
+                Telegram.encodeSendMessage sendMessage
+            }
 
         AnswerInlineQueryMethod inlineQuery ->
-            Encode.object
-                [ ( "method", Encode.string "answerInlineQuery" )
-                , ( "content", Telegram.encodeAnswerInlineQuery inlineQuery )
-                ]
+            { methodName = "answerInlineQuery"
+            , content =
+                Telegram.encodeAnswerInlineQuery inlineQuery
+            }
 
         AnswerCallbackQueryMethod callbackQuery ->
-            Encode.object
-                [ ( "method", Encode.string "answerCallbackQuery" )
-                , ( "content", Telegram.encodeAnswerCallbackQuery callbackQuery )
-                ]
+            { methodName = "answerCallbackQuery"
+            , content =
+                Telegram.encodeAnswerCallbackQuery callbackQuery
+            }
 
 
 
