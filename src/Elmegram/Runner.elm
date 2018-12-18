@@ -1,9 +1,11 @@
 module Elmegram.Runner exposing (BotInit, BotUpdate, ErrorPort, IncomingUpdatePort, MethodPort, botRunner)
 
 import Elmegram exposing (..)
+import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Telegram
+import Url exposing (Url)
 
 
 type alias Bot model msg =
@@ -47,58 +49,145 @@ botRunner :
     -> Platform.Program Encode.Value (Model model) (Msg msg)
 botRunner bot ports =
     Platform.worker
-        { init = init bot.init ports.errorPort
-        , update = update bot.newUpdateMsg bot.update ports.methodPort ports.errorPort
+        { init = init ports.errorPort
+        , update = update bot.init bot.newUpdateMsg bot.update ports.methodPort ports.errorPort
         , subscriptions = subscriptions ports.incomingUpdatePort
         }
 
 
+type alias Token =
+    String
+
+
 type alias Model botModel =
-    Maybe botModel
+    Maybe
+        { botModel : botModel
+        , token : Token
+        }
 
 
-init : BotInit model -> ErrorPort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMsg) )
-init botInit errorPort flags =
+init : ErrorPort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMsg) )
+init errorPort flags =
     let
-        selfResult =
-            Decode.decodeValue Telegram.decodeUser flags
+        tokenResult =
+            Decode.decodeValue (Decode.field "token" Decode.string) flags
     in
-    case selfResult of
-        Ok self ->
-            ( Just <| botInit self, Cmd.none )
+    case tokenResult of
+        Ok token ->
+            let
+                getMe =
+                    Http.get
+                        { url = getMeUrl token |> Url.toString
+                        , expect = Http.expectJson (Init token) (Decode.field "result" Telegram.decodeUser)
+                        }
+            in
+            ( Nothing, getMe )
 
         Err error ->
             ( Nothing, errorPort <| Decode.errorToString error )
 
 
+getMeUrl : Token -> Url
+getMeUrl token =
+    getMethodUrl token "getMe"
+
+
+getMethodUrl : Token -> String -> Url
+getMethodUrl token method =
+    let
+        baseUrl =
+            getBaseUrl token
+    in
+    { baseUrl | path = baseUrl.path ++ "/" ++ method }
+
+
+getBaseUrl : String -> Url
+getBaseUrl token =
+    { protocol = Url.Https
+    , host = "api.telegram.org"
+    , port_ = Nothing
+    , path = "/bot" ++ token
+    , query = Nothing
+    , fragment = Nothing
+    }
+
+
 type Msg botMsg
-    = NewUpdate UpdateResult
+    = Init Token (Result Http.Error Telegram.User)
+    | NewUpdate UpdateResult
     | BotMsg botMsg
 
 
-update : BotNewUpdateMsg botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> Msg botMsg -> Model model -> ( Model model, Cmd (Msg botMsg) )
-update botNewUpdateMsg botUpdate methodPort errorPort msg maybeModel =
-    case maybeModel of
-        Just model ->
-            case msg of
-                NewUpdate result ->
-                    processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model
-                        |> Tuple.mapFirst Just
+update :
+    BotInit model
+    -> BotNewUpdateMsg botMsg
+    -> BotUpdate model botMsg
+    -> MethodPort (Msg botMsg)
+    -> ErrorPort (Msg botMsg)
+    -> Msg botMsg
+    -> Model model
+    -> ( Model model, Cmd (Msg botMsg) )
+update botInit botNewUpdateMsg botUpdate methodPort errorPort msg maybeModel =
+    case msg of
+        Init token getMeResult ->
+            case getMeResult of
+                Ok self ->
+                    ( Just
+                        { botModel = botInit self
+                        , token = token
+                        }
+                    , Cmd.none
+                    )
 
-                BotMsg botMsg ->
-                    botUpdate botMsg model
+                Err error ->
+                    case error of
+                        Http.BadBody errorMsg ->
+                            ( Nothing, errorPort ("Error while initializing bot:\n" ++ errorMsg) )
+
+                        Http.BadStatus status ->
+                            ( Nothing, errorPort ("Error while initializing bot:\nResponse had status " ++ String.fromInt status ++ ".") )
+
+                        Http.NetworkError ->
+                            ( Nothing, errorPort "Network error while initializing bot." )
+
+                        Http.Timeout ->
+                            ( Nothing, errorPort "Timeout while initializing bot." )
+
+                        Http.BadUrl url ->
+                            ( Nothing, errorPort ("Bad url while initializing bot:\nUrl was " ++ url ++ ".") )
+
+        NewUpdate result ->
+            case maybeModel of
+                Just model ->
+                    processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model.botModel
+                        |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
+
+                Nothing ->
+                    ( Nothing, errorPort "Got new update even though bot initialization was unsuccessful." )
+
+        BotMsg botMsg ->
+            case maybeModel of
+                Just model ->
+                    botUpdate botMsg model.botModel
                         |> updateFromResponse methodPort
-                        |> Tuple.mapFirst Just
+                        |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
 
-        Nothing ->
-            ( Nothing, Cmd.none )
+                Nothing ->
+                    ( Nothing, errorPort "Got bot message even though bot initialization was unsuccessful." )
 
 
 type alias UpdateResult =
     Result Decode.Error Telegram.Update
 
 
-processUpdate : BotNewUpdateMsg botMsg -> BotUpdate model botMsg -> MethodPort (Msg botMsg) -> ErrorPort (Msg botMsg) -> UpdateResult -> model -> ( model, Cmd (Msg botMsg) )
+processUpdate :
+    BotNewUpdateMsg botMsg
+    -> BotUpdate model botMsg
+    -> MethodPort (Msg botMsg)
+    -> ErrorPort (Msg botMsg)
+    -> UpdateResult
+    -> model
+    -> ( model, Cmd (Msg botMsg) )
 processUpdate botNewUpdateMsg botUpdate methodPort errorPort result model =
     case result of
         Err err ->
