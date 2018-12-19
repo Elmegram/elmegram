@@ -1,13 +1,10 @@
 module Elmegram.Runner exposing
-    ( BotInit
-    , BotUpdate
-    , ErrorPort
+    ( ErrorPort
     , IncomingUpdatePort
-    , Method(..)
-    , Response
     , botRunner
     )
 
+import Elmegram.Bot as Bot exposing (Bot)
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
@@ -17,25 +14,6 @@ import Url exposing (Url)
 
 
 -- INTERFACE
-
-
-type alias Bot model msg =
-    { init : BotInit model
-    , newUpdateMsg : BotNewUpdateMsg msg
-    , update : BotUpdate model msg
-    }
-
-
-type alias BotInit model =
-    Telegram.User -> model
-
-
-type alias BotNewUpdateMsg msg =
-    Telegram.Update -> msg
-
-
-type alias BotUpdate model msg =
-    msg -> model -> Response model msg
 
 
 type alias IncomingUpdatePort msg =
@@ -48,16 +26,14 @@ type alias ErrorPort msg =
 
 botRunner :
     Bot model msg
-    ->
-        { incomingUpdatePort : IncomingUpdatePort (Msg msg)
-        , errorPort : ErrorPort (Msg msg)
-        }
+    -> IncomingUpdatePort (Msg msg)
+    -> ErrorPort (Msg msg)
     -> Platform.Program Encode.Value (Model model) (Msg msg)
-botRunner bot ports =
+botRunner bot incomingUpdatePort errorPort =
     Platform.worker
-        { init = init ports.errorPort
-        , update = update bot.init bot.newUpdateMsg bot.update ports.errorPort
-        , subscriptions = subscriptions ports.incomingUpdatePort
+        { init = init errorPort
+        , update = update bot errorPort
+        , subscriptions = subscriptions incomingUpdatePort
         }
 
 
@@ -71,8 +47,8 @@ type alias Token =
 
 type alias Model botModel =
     Maybe
-        { botModel : botModel
-        , token : Token
+        { token : Token
+        , botModel : botModel
         }
 
 
@@ -84,14 +60,7 @@ init errorPort flags =
     in
     case tokenResult of
         Ok token ->
-            let
-                getMe =
-                    Http.get
-                        { url = getMeUrl token |> Url.toString
-                        , expect = Http.expectJson (Init token) (Decode.field "result" Telegram.decodeUser)
-                        }
-            in
-            ( Nothing, getMe )
+            ( Nothing, getMe token (Init token) )
 
         Err error ->
             ( Nothing, errorPort <| Decode.errorToString error )
@@ -99,6 +68,14 @@ init errorPort flags =
 
 
 -- TELEGRAM API
+
+
+getMe : Token -> (Result Http.Error Telegram.User -> msg) -> Cmd msg
+getMe token tagger =
+    Http.get
+        { url = getMeUrl token |> Url.toString
+        , expect = Http.expectJson tagger (Decode.field "result" Telegram.decodeUser)
+        }
 
 
 getMeUrl : Token -> Url
@@ -135,46 +112,11 @@ getBaseUrl token =
 -- UPDATE
 
 
-type alias Response model msg =
-    { methods : List Method
-    , model : model
-    , command : Cmd msg
-    }
-
-
-type Method
-    = SendMessageMethod Telegram.SendMessage
-    | AnswerInlineQueryMethod Telegram.AnswerInlineQuery
-    | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
-
-
-encodeMethod : Method -> { methodName : String, content : Encode.Value }
-encodeMethod method =
-    case method of
-        SendMessageMethod sendMessage ->
-            { methodName = "sendMessage"
-            , content =
-                Telegram.encodeSendMessage sendMessage
-            }
-
-        AnswerInlineQueryMethod inlineQuery ->
-            { methodName = "answerInlineQuery"
-            , content =
-                Telegram.encodeAnswerInlineQuery inlineQuery
-            }
-
-        AnswerCallbackQueryMethod callbackQuery ->
-            { methodName = "answerCallbackQuery"
-            , content =
-                Telegram.encodeAnswerCallbackQuery callbackQuery
-            }
-
-
 type Msg botMsg
     = Init Token (Result Http.Error Telegram.User)
     | NewUpdate UpdateResult
     | BotMsg botMsg
-    | SentMethod Method (Result String String)
+    | SentMethod Bot.Method (Result String String)
 
 
 update :
@@ -189,7 +131,7 @@ update bot errorPort msg maybeModel =
             case getMeResult of
                 Ok self ->
                     ( Just
-                        { botModel = bot.init self
+                        { botModel = bot.init self |> .model
                         , token = token
                         }
                     , Cmd.none
@@ -242,7 +184,7 @@ update bot errorPort msg maybeModel =
                     ( Nothing
                     , let
                         { methodName, content } =
-                            encodeMethod method
+                            Bot.encodeMethod method
                       in
                       errorPort
                         ("Sending of method was unsuccessful. Reason: "
@@ -261,8 +203,8 @@ type alias UpdateResult =
 
 processUpdate :
     Token
-    -> BotNewUpdateMsg botMsg
-    -> BotUpdate model botMsg
+    -> Bot.BotNewUpdateMsg botMsg
+    -> Bot.BotUpdate model botMsg
     -> ErrorPort (Msg botMsg)
     -> UpdateResult
     -> model
@@ -277,12 +219,12 @@ processUpdate token botNewUpdateMsg botUpdate errorPort result model =
                 |> updateFromResponse token
 
 
-updateFromResponse : Token -> Response model botMsg -> ( model, Cmd (Msg botMsg) )
+updateFromResponse : Token -> Bot.Response model botMsg -> ( model, Cmd (Msg botMsg) )
 updateFromResponse token response =
     ( response.model, cmdFromResponse token response )
 
 
-cmdFromResponse : Token -> Response model botMsg -> Cmd (Msg botMsg)
+cmdFromResponse : Token -> Bot.Response model botMsg -> Cmd (Msg botMsg)
 cmdFromResponse token response =
     Cmd.batch
         ([ Cmd.map BotMsg response.command
@@ -296,11 +238,11 @@ cmdFromResponse token response =
         )
 
 
-sendMethod : Token -> Method -> Cmd (Msg botMsg)
+sendMethod : Token -> Bot.Method -> Cmd (Msg botMsg)
 sendMethod token method =
     let
         { methodName, content } =
-            encodeMethod method
+            Bot.encodeMethod method
 
         parseSendMethodResponse response =
             case response of
