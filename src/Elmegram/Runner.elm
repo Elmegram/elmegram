@@ -1,6 +1,16 @@
-module Elmegram.Runner exposing (BotInit, BotUpdate, ErrorPort, IncomingUpdatePort, botRunner)
+module Elmegram.Runner exposing
+    ( BotInit
+    , BotUpdate
+    , ErrorPort
+    , IncomingUpdatePort
+    , Method(..)
+    , Response
+    , botRunner
+    , methodFromAnswerCallbackQuery
+    , methodFromInlineQuery
+    , methodFromMessage
+    )
 
-import Elmegram exposing (..)
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
@@ -107,11 +117,58 @@ getBaseUrl token =
     }
 
 
+type alias Response model msg =
+    { methods : List Method
+    , model : model
+    , command : Cmd msg
+    }
+
+
+type Method
+    = SendMessageMethod Telegram.SendMessage
+    | AnswerInlineQueryMethod Telegram.AnswerInlineQuery
+    | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
+
+
+methodFromMessage =
+    SendMessageMethod
+
+
+methodFromInlineQuery =
+    AnswerInlineQueryMethod
+
+
+methodFromAnswerCallbackQuery =
+    AnswerCallbackQueryMethod
+
+
+encodeMethod : Method -> { methodName : String, content : Encode.Value }
+encodeMethod method =
+    case method of
+        SendMessageMethod sendMessage ->
+            { methodName = "sendMessage"
+            , content =
+                Telegram.encodeSendMessage sendMessage
+            }
+
+        AnswerInlineQueryMethod inlineQuery ->
+            { methodName = "answerInlineQuery"
+            , content =
+                Telegram.encodeAnswerInlineQuery inlineQuery
+            }
+
+        AnswerCallbackQueryMethod callbackQuery ->
+            { methodName = "answerCallbackQuery"
+            , content =
+                Telegram.encodeAnswerCallbackQuery callbackQuery
+            }
+
+
 type Msg botMsg
     = Init Token (Result Http.Error Telegram.User)
     | NewUpdate UpdateResult
     | BotMsg botMsg
-    | SentMethod Elmegram.Method (Result String String)
+    | SentMethod Method (Result String String)
 
 
 update :
@@ -178,7 +235,7 @@ update botInit botNewUpdateMsg botUpdate errorPort msg maybeModel =
                     )
 
                 Err error ->
-                    ( Nothing, errorPort ("Sending of method was unsuccessful. Reason: " ++ error ++ ".\nMethod was:\n" ++ Encode.encode 2 (Elmegram.encodeMethod method |> .content)) )
+                    ( Nothing, errorPort ("Sending of method was unsuccessful. Reason: " ++ error ++ ".\nMethod was:\n" ++ Encode.encode 2 (encodeMethod method |> .content)) )
 
 
 type alias UpdateResult =
@@ -203,12 +260,12 @@ processUpdate token botNewUpdateMsg botUpdate errorPort result model =
                 |> updateFromResponse token
 
 
-updateFromResponse : Token -> Elmegram.Response model botMsg -> ( model, Cmd (Msg botMsg) )
+updateFromResponse : Token -> Response model botMsg -> ( model, Cmd (Msg botMsg) )
 updateFromResponse token response =
     ( response.model, cmdFromResponse token response )
 
 
-cmdFromResponse : Token -> Elmegram.Response model botMsg -> Cmd (Msg botMsg)
+cmdFromResponse : Token -> Response model botMsg -> Cmd (Msg botMsg)
 cmdFromResponse token response =
     Cmd.batch
         ([ Cmd.map BotMsg response.command
@@ -222,11 +279,11 @@ cmdFromResponse token response =
         )
 
 
-sendMethod : Token -> Elmegram.Method -> Cmd (Msg botMsg)
+sendMethod : Token -> Method -> Cmd (Msg botMsg)
 sendMethod token method =
     let
         { methodName, content } =
-            Elmegram.encodeMethod method
+            encodeMethod method
 
         parseSendMethodResponse response =
             case response of

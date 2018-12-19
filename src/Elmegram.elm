@@ -1,12 +1,6 @@
 module Elmegram exposing
     ( FormattedText
-    , Method(..)
-    , Response
-    , answer
-    , answerFormatted
-    , answerInlineQuery
     , containsCommand
-    , encodeMethod
     , format
     , getDisplayName
     , inlineQueryResultArticle
@@ -19,55 +13,11 @@ module Elmegram exposing
     , makeInputMessageFormatted
     , makeMinimalInlineQueryResultArticle
     , matchesCommand
-    , methodFromAnswerCallbackQuery
-    , methodFromInlineQuery
-    , methodFromMessage
-    , reply
-    , replyFormatted
     )
 
 import Json.Decode as Decode
 import Json.Encode as Encode
 import Telegram
-
-
-
--- INTERFACE
-
-
-type alias Response model msg =
-    { methods : List Method
-    , model : model
-    , command : Cmd msg
-    }
-
-
-type Method
-    = SendMessageMethod Telegram.SendMessage
-    | AnswerInlineQueryMethod Telegram.AnswerInlineQuery
-    | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
-
-
-encodeMethod : Method -> { methodName : String, content : Encode.Value }
-encodeMethod method =
-    case method of
-        SendMessageMethod sendMessage ->
-            { methodName = "sendMessage"
-            , content =
-                Telegram.encodeSendMessage sendMessage
-            }
-
-        AnswerInlineQueryMethod inlineQuery ->
-            { methodName = "answerInlineQuery"
-            , content =
-                Telegram.encodeAnswerInlineQuery inlineQuery
-            }
-
-        AnswerCallbackQueryMethod callbackQuery ->
-            { methodName = "answerCallbackQuery"
-            , content =
-                Telegram.encodeAnswerCallbackQuery callbackQuery
-            }
 
 
 
@@ -126,11 +76,6 @@ makeAnswer to text =
     }
 
 
-answer to text =
-    makeAnswer to text
-        |> methodFromMessage
-
-
 makeAnswerFormatted : Telegram.Chat -> FormattedText -> Telegram.SendMessage
 makeAnswerFormatted to (Format mode text) =
     let
@@ -140,11 +85,6 @@ makeAnswerFormatted to (Format mode text) =
     { sendMessage
         | parse_mode = Just mode
     }
-
-
-answerFormatted to text =
-    makeAnswerFormatted to text
-        |> methodFromMessage
 
 
 type FormattedText
@@ -166,11 +106,6 @@ makeReply to text =
     }
 
 
-reply to text =
-    makeReply to text
-        |> methodFromMessage
-
-
 makeReplyFormatted : Telegram.TextMessage -> FormattedText -> Telegram.SendMessage
 makeReplyFormatted to (Format mode text) =
     let
@@ -180,15 +115,6 @@ makeReplyFormatted to (Format mode text) =
     { sendMessage
         | parse_mode = Just mode
     }
-
-
-replyFormatted to text =
-    makeReplyFormatted to text
-        |> methodFromMessage
-
-
-methodFromMessage =
-    SendMessageMethod
 
 
 
@@ -204,11 +130,6 @@ makeAnswerInlineQuery to results =
     , next_offset = Nothing
     , switch_pm = Nothing
     }
-
-
-answerInlineQuery to results =
-    makeAnswerInlineQuery to results
-        |> methodFromInlineQuery
 
 
 makeMinimalInlineQueryResultArticle : { a | id : String, title : String, message : Telegram.InputMessageContent } -> Telegram.InlineQueryResultArticle
@@ -255,10 +176,6 @@ makeInputMessageFormatted (Format mode text) =
         }
 
 
-methodFromInlineQuery =
-    AnswerInlineQueryMethod
-
-
 
 -- ANSWER CALLBACK QUERIES
 
@@ -271,10 +188,6 @@ makeAnswerCallbackQuery to =
     , url = Nothing
     , cache_time = 0
     }
-
-
-methodFromAnswerCallbackQuery =
-    AnswerCallbackQueryMethod
 
 
 
