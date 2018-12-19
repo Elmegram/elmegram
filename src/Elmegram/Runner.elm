@@ -1,6 +1,5 @@
 module Elmegram.Runner exposing
     ( ErrorPort
-    , IncomingUpdatePort
     , botRunner
     )
 
@@ -15,10 +14,6 @@ import Url exposing (Url)
 
 
 -- INTERFACE
-
-
-type alias IncomingUpdatePort msg =
-    (Encode.Value -> msg) -> Sub msg
 
 
 type alias ErrorPort msg =
