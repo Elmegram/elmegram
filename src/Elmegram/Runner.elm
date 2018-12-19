@@ -18,6 +18,10 @@ import Telegram
 import Url exposing (Url)
 
 
+
+-- INTERFACE
+
+
 type alias Bot model msg =
     { init : BotInit model
     , newUpdateMsg : BotNewUpdateMsg msg
@@ -60,6 +64,10 @@ botRunner bot ports =
         }
 
 
+
+-- INIT
+
+
 type alias Token =
     String
 
@@ -92,6 +100,10 @@ init errorPort flags =
             ( Nothing, errorPort <| Decode.errorToString error )
 
 
+
+-- TELEGRAM API
+
+
 getMeUrl : Token -> Url
 getMeUrl token =
     getMethodUrl token "getMe"
@@ -115,6 +127,10 @@ getBaseUrl token =
     , query = Nothing
     , fragment = Nothing
     }
+
+
+
+-- UPDATE
 
 
 type alias Response model msg =
@@ -312,6 +328,10 @@ sendMethod token method =
         , body = Http.jsonBody content
         , expect = Http.expectStringResponse (SentMethod method) parseSendMethodResponse
         }
+
+
+
+-- SUBSCRIPTIONS
 
 
 subscriptions : IncomingUpdatePort (Msg botMsg) -> model -> Sub (Msg botMsg)
