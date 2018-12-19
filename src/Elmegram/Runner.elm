@@ -6,9 +6,6 @@ module Elmegram.Runner exposing
     , Method(..)
     , Response
     , botRunner
-    , methodFromAnswerCallbackQuery
-    , methodFromInlineQuery
-    , methodFromMessage
     )
 
 import Http
@@ -130,14 +127,7 @@ getBaseUrl token =
 
 
 
--- UPDATE
-
-
-type alias Response model msg =
-    { methods : List Method
-    , model : model
-    , command : Cmd msg
-    }
+-- METHODS
 
 
 type Method
@@ -146,16 +136,15 @@ type Method
     | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
 
 
-methodFromMessage =
-    SendMessageMethod
+
+-- UPDATE
 
 
-methodFromInlineQuery =
-    AnswerInlineQueryMethod
-
-
-methodFromAnswerCallbackQuery =
-    AnswerCallbackQueryMethod
+type alias Response model msg =
+    { methods : List Method
+    , model : model
+    , command : Cmd msg
+    }
 
 
 encodeMethod : Method -> { methodName : String, content : Encode.Value }
