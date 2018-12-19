@@ -106,6 +106,11 @@ getMeUrl token =
     getMethodUrl token "getMe"
 
 
+getUpdatesUrl : Token -> Url
+getUpdatesUrl token =
+    getMethodUrl token "getUpdates"
+
+
 getMethodUrl : Token -> String -> Url
 getMethodUrl token method =
     let
@@ -127,16 +132,6 @@ getBaseUrl token =
 
 
 
--- METHODS
-
-
-type Method
-    = SendMessageMethod Telegram.SendMessage
-    | AnswerInlineQueryMethod Telegram.AnswerInlineQuery
-    | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
-
-
-
 -- UPDATE
 
 
@@ -145,6 +140,12 @@ type alias Response model msg =
     , model : model
     , command : Cmd msg
     }
+
+
+type Method
+    = SendMessageMethod Telegram.SendMessage
+    | AnswerInlineQueryMethod Telegram.AnswerInlineQuery
+    | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
 
 
 encodeMethod : Method -> { methodName : String, content : Encode.Value }
@@ -177,20 +178,18 @@ type Msg botMsg
 
 
 update :
-    BotInit model
-    -> BotNewUpdateMsg botMsg
-    -> BotUpdate model botMsg
+    Bot model botMsg
     -> ErrorPort (Msg botMsg)
     -> Msg botMsg
     -> Model model
     -> ( Model model, Cmd (Msg botMsg) )
-update botInit botNewUpdateMsg botUpdate errorPort msg maybeModel =
+update bot errorPort msg maybeModel =
     case msg of
         Init token getMeResult ->
             case getMeResult of
                 Ok self ->
                     ( Just
-                        { botModel = botInit self
+                        { botModel = bot.init self
                         , token = token
                         }
                     , Cmd.none
@@ -216,7 +215,7 @@ update botInit botNewUpdateMsg botUpdate errorPort msg maybeModel =
         NewUpdate result ->
             case maybeModel of
                 Just model ->
-                    processUpdate model.token botNewUpdateMsg botUpdate errorPort result model.botModel
+                    processUpdate model.token bot.newUpdateMsg bot.update errorPort result model.botModel
                         |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
 
                 Nothing ->
@@ -225,7 +224,7 @@ update botInit botNewUpdateMsg botUpdate errorPort msg maybeModel =
         BotMsg botMsg ->
             case maybeModel of
                 Just model ->
-                    botUpdate botMsg model.botModel
+                    bot.update botMsg model.botModel
                         |> updateFromResponse model.token
                         |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
 
@@ -240,7 +239,20 @@ update botInit botNewUpdateMsg botUpdate errorPort msg maybeModel =
                     )
 
                 Err error ->
-                    ( Nothing, errorPort ("Sending of method was unsuccessful. Reason: " ++ error ++ ".\nMethod was:\n" ++ Encode.encode 2 (encodeMethod method |> .content)) )
+                    ( Nothing
+                    , let
+                        { methodName, content } =
+                            encodeMethod method
+                      in
+                      errorPort
+                        ("Sending of method was unsuccessful. Reason: "
+                            ++ error
+                            ++ ".\nMethod was '"
+                            ++ methodName
+                            ++ "' containing:\n"
+                            ++ Encode.encode 2 content
+                        )
+                    )
 
 
 type alias UpdateResult =
