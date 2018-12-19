@@ -98,9 +98,9 @@ matchesCommand command message =
                         end =
                             bounds.offset + bounds.length
                     in
-                    -- Drop the '/'.
-                    String.dropLeft 1 message.text
-                        |> String.slice bounds.offset end
+                    String.slice bounds.offset end message.text
+                        |> -- Drop the '/'.
+                           String.dropLeft 1
                         |> String.split "@"
                         |> List.head
                         |> Maybe.map (\actual -> actual == command)

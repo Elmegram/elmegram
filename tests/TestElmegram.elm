@@ -40,6 +40,24 @@ suite =
                     Elmegram.matchesCommand "me" message
                         |> Expect.true
                             ("Expected to find command 'me' in '" ++ message.text ++ "'.")
+            , test "detects command followed by arguments" <|
+                \_ ->
+                    let
+                        message =
+                            TeleTest.makeMessage "/detect me"
+                    in
+                    Elmegram.matchesCommand "detect" message
+                        |> Expect.true
+                            ("Expected to find command 'detect' in '" ++ message.text ++ "'.")
+            , test "detects namespaced command" <|
+                \_ ->
+                    let
+                        message =
+                            TeleTest.makeMessage "detect /me@bot"
+                    in
+                    Elmegram.matchesCommand "me" message
+                        |> Expect.true
+                            ("Expected to find command 'me' in '" ++ message.text ++ "'.")
             , test "signals no command" <|
                 \_ ->
                     let
