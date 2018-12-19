@@ -8,6 +8,7 @@ import Elmegram.Bot as Bot exposing (Bot)
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode
+import List.Extra as List
 import Telegram
 import Url exposing (Url)
 
@@ -26,14 +27,13 @@ type alias ErrorPort msg =
 
 botRunner :
     Bot model msg
-    -> IncomingUpdatePort (Msg msg)
     -> ErrorPort (Msg msg)
     -> Platform.Program Encode.Value (Model model) (Msg msg)
-botRunner bot incomingUpdatePort errorPort =
+botRunner bot errorPort =
     Platform.worker
         { init = init errorPort
         , update = update bot errorPort
-        , subscriptions = subscriptions incomingUpdatePort
+        , subscriptions = \_ -> Sub.none
         }
 
 
@@ -46,10 +46,13 @@ type alias Token =
 
 
 type alias Model botModel =
-    Maybe
-        { token : Token
-        , botModel : botModel
-        }
+    Maybe (RunningModel botModel)
+
+
+type alias RunningModel botModel =
+    { token : Token
+    , botModel : botModel
+    }
 
 
 init : ErrorPort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMsg) )
@@ -64,6 +67,16 @@ init errorPort flags =
 
         Err error ->
             ( Nothing, errorPort <| Decode.errorToString error )
+
+
+initModel : Bot.BotInit model msg -> Token -> Telegram.User -> ( Model model, Cmd (Msg botMsg) )
+initModel botInit token self =
+    ( Just
+        { botModel = botInit self |> .model
+        , token = token
+        }
+    , getUpdates token 0 NewUpdate
+    )
 
 
 
@@ -81,6 +94,20 @@ getMe token tagger =
 getMeUrl : Token -> Url
 getMeUrl token =
     getMethodUrl token "getMe"
+
+
+getUpdates : Token -> Int -> (Result Http.Error (List Telegram.Update) -> msg) -> Cmd msg
+getUpdates token offset tagger =
+    Http.post
+        { url = getUpdatesUrl token |> Url.toString
+        , expect = Http.expectJson tagger (Decode.field "result" <| Decode.list Telegram.decodeUpdate)
+        , body =
+            Http.jsonBody
+                (Encode.object
+                    [ ( "offset", Encode.int offset )
+                    ]
+                )
+        }
 
 
 getUpdatesUrl : Token -> Url
@@ -114,7 +141,7 @@ getBaseUrl token =
 
 type Msg botMsg
     = Init Token (Result Http.Error Telegram.User)
-    | NewUpdate UpdateResult
+    | NewUpdate (Result Http.Error (List Telegram.Update))
     | BotMsg botMsg
     | SentMethod Bot.Method (Result String String)
 
@@ -130,35 +157,16 @@ update bot errorPort msg maybeModel =
         Init token getMeResult ->
             case getMeResult of
                 Ok self ->
-                    ( Just
-                        { botModel = bot.init self |> .model
-                        , token = token
-                        }
-                    , Cmd.none
-                    )
+                    initModel bot.init token self
 
                 Err error ->
-                    case error of
-                        Http.BadBody errorMsg ->
-                            ( Nothing, errorPort ("Error while initializing bot:\n" ++ errorMsg) )
-
-                        Http.BadStatus status ->
-                            ( Nothing, errorPort ("Error while initializing bot:\nResponse had status " ++ String.fromInt status ++ ".") )
-
-                        Http.NetworkError ->
-                            ( Nothing, errorPort "Network error while initializing bot." )
-
-                        Http.Timeout ->
-                            ( Nothing, errorPort "Timeout while initializing bot." )
-
-                        Http.BadUrl url ->
-                            ( Nothing, errorPort ("Bad url while initializing bot:\nUrl was " ++ url ++ ".") )
+                    ( Nothing, errorPort ("Error while initializing bot:\n" ++ httpErrorToString error) )
 
         NewUpdate result ->
             case maybeModel of
                 Just model ->
-                    processUpdate model.token bot.newUpdateMsg bot.update errorPort result model.botModel
-                        |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
+                    processUpdates model.token bot model errorPort result
+                        |> Tuple.mapFirst Just
 
                 Nothing ->
                     ( Nothing, errorPort "Got new update even though bot initialization was unsuccessful." )
@@ -197,26 +205,67 @@ update bot errorPort msg maybeModel =
                     )
 
 
-type alias UpdateResult =
-    Result Decode.Error Telegram.Update
+httpErrorToString : Http.Error -> String
+httpErrorToString error =
+    case error of
+        Http.BadUrl url ->
+            "Requested url '" ++ url ++ "' is invalid."
+
+        Http.Timeout ->
+            "Timed out."
+
+        Http.NetworkError ->
+            "Network error."
+
+        Http.BadStatus status ->
+            "Response had bad status " ++ String.fromInt status ++ "."
+
+        Http.BadBody bodyError ->
+            "Response body had an issue:\n" ++ bodyError
+
+
+processUpdates :
+    Token
+    -> Bot botModel botMsg
+    -> RunningModel botModel
+    -> ErrorPort (Msg botMsg)
+    -> Result Http.Error (List Telegram.Update)
+    -> ( RunningModel botModel, Cmd (Msg botMsg) )
+processUpdates token bot model errorPort updatesResult =
+    case updatesResult of
+        Ok updates ->
+            List.foldl
+                (\newUpdate ( previousModel, previousCmd ) ->
+                    processUpdate bot.newUpdateMsg bot.update previousModel newUpdate
+                        |> updateFromResponse token
+                )
+                ( model.botModel, Cmd.none )
+                updates
+                |> Tuple.mapFirst (\botModel -> { model | botModel = botModel })
+                |> (let
+                        offset =
+                            case List.last updates of
+                                Just lastUpdate ->
+                                    Telegram.getNextOffset lastUpdate.update_id
+
+                                Nothing ->
+                                    0
+                    in
+                    Tuple.mapSecond (\cmd -> Cmd.batch [ cmd, getUpdates token offset NewUpdate ])
+                   )
+
+        Err error ->
+            ( model, errorPort ("Error while processing new updates:\n" ++ httpErrorToString error) )
 
 
 processUpdate :
-    Token
-    -> Bot.BotNewUpdateMsg botMsg
-    -> Bot.BotUpdate model botMsg
-    -> ErrorPort (Msg botMsg)
-    -> UpdateResult
-    -> model
-    -> ( model, Cmd (Msg botMsg) )
-processUpdate token botNewUpdateMsg botUpdate errorPort result model =
-    case result of
-        Err err ->
-            ( model, Decode.errorToString err |> errorPort )
-
-        Ok newUpdate ->
-            botUpdate (botNewUpdateMsg newUpdate) model
-                |> updateFromResponse token
+    Bot.BotNewUpdateMsg botMsg
+    -> Bot.BotUpdate botModel botMsg
+    -> botModel
+    -> Telegram.Update
+    -> Bot.Response botModel botMsg
+processUpdate botNewUpdateMsg botUpdate model newUpdate =
+    botUpdate (botNewUpdateMsg newUpdate) model
 
 
 updateFromResponse : Token -> Bot.Response model botMsg -> ( model, Cmd (Msg botMsg) )
@@ -229,12 +278,7 @@ cmdFromResponse token response =
     Cmd.batch
         ([ Cmd.map BotMsg response.command
          ]
-            ++ (if List.isEmpty response.methods then
-                    []
-
-                else
-                    List.map (sendMethod token) response.methods
-               )
+            ++ List.map (sendMethod token) response.methods
         )
 
 
@@ -271,12 +315,3 @@ sendMethod token method =
         , body = Http.jsonBody content
         , expect = Http.expectStringResponse (SentMethod method) parseSendMethodResponse
         }
-
-
-
--- SUBSCRIPTIONS
-
-
-subscriptions : IncomingUpdatePort (Msg botMsg) -> model -> Sub (Msg botMsg)
-subscriptions incomingUpdatePort model =
-    incomingUpdatePort (Decode.decodeValue Telegram.decodeUpdate >> NewUpdate)
