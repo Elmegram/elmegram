@@ -1,7 +1,8 @@
-module Elmegram.Bot exposing (Bot, Init, Method(..), NewUpdateMsg, Response, Update, encodeMethod)
+module Elmegram.Bot exposing (Bot, Init, Method(..), NewUpdateMsg, Response, Update, encodeMethod, sendMethod)
 
 import Json.Encode as Encode
 import Telegram
+import Telegram.Methods as Telegram
 
 
 type alias Bot model msg =
@@ -38,6 +39,19 @@ type Method
     = SendMessageMethod Telegram.SendMessage
     | AnswerInlineQueryMethod Telegram.AnswerInlineQuery
     | AnswerCallbackQueryMethod Telegram.AnswerCallbackQuery
+
+
+sendMethod : Telegram.Token -> Method -> (Result String () -> msg) -> Cmd msg
+sendMethod token method tagger =
+    case method of
+        SendMessageMethod toSend ->
+            Telegram.sendMessage token toSend tagger
+
+        AnswerInlineQueryMethod toSend ->
+            Telegram.answerInlineQuery token toSend tagger
+
+        AnswerCallbackQueryMethod toSend ->
+            Telegram.answerCallbackQuery token toSend tagger
 
 
 encodeMethod : Method -> { methodName : String, content : Encode.Value }
