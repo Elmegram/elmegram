@@ -11,6 +11,7 @@ import Json.Decode as Decode
 import Json.Encode as Encode
 import List.Extra as List
 import Telegram
+import Telegram.Methods as Telegram
 import Url exposing (Url)
 
 
@@ -27,53 +28,7 @@ botRunner bot consolePort =
 
 
 
--- CONSOLE
-
-
-type alias ConsolePort msg =
-    { level : String, message : String } -> Cmd msg
-
-
-log : ConsolePort msg -> String -> Cmd msg
-log consolePort message =
-    outputToConsole consolePort <| Runner.Log Runner.Info message
-
-
-logError : ConsolePort msg -> String -> Cmd msg
-logError consolePort message =
-    outputToConsole consolePort <| Runner.Log Runner.Error message
-
-
-outputToConsole : ConsolePort msg -> Runner.Log -> Cmd msg
-outputToConsole consolePort l =
-    let
-        levelString =
-            case l.level of
-                Runner.Info ->
-                    "log"
-
-                Runner.Error ->
-                    "error"
-    in
-    consolePort { level = levelString, message = l.message }
-
-
-
 -- INIT
-
-
-type Token
-    = Token String
-
-
-stringFromToken : Token -> String
-stringFromToken (Token token) =
-    token
-
-
-decodeToken : Decode.Decoder Token
-decodeToken =
-    Decode.string |> Decode.map Token
 
 
 type Model botModel
@@ -83,7 +38,7 @@ type Model botModel
 
 
 type alias RunningModel botModel =
-    { token : Token
+    { token : Telegram.Token
     , botModel : botModel
     }
 
@@ -92,11 +47,11 @@ init : ConsolePort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMs
 init consolePort flags =
     let
         tokenResult =
-            Decode.decodeValue (Decode.field "token" decodeToken) flags
+            Decode.decodeValue (Decode.field "token" Telegram.decodeToken) flags
     in
     case tokenResult of
         Ok token ->
-            ( Initializing, Cmd.batch [ log consolePort "Deleting potential webhook.", deleteWebhook token (DeletedWebhook token) ] )
+            ( Initializing, Cmd.batch [ log consolePort "Deleting potential webhook.", Telegram.deleteWebhook token (DeletedWebhook token) ] )
 
         Err error ->
             ( Errored, logError consolePort <| Decode.errorToString error )
@@ -105,7 +60,7 @@ init consolePort flags =
 initModel :
     ConsolePort (Msg botMsg)
     -> Bot.Init model botMsg
-    -> Token
+    -> Telegram.Token
     -> Telegram.User
     -> ( Model model, Cmd (Msg botMsg) )
 initModel consolePort botInit token self =
@@ -114,112 +69,22 @@ initModel consolePort botInit token self =
         , token = token
         }
     , Cmd.batch
-        [ getUpdates token 0
+        [ Telegram.getUpdates token
+            0
+            processUpdates
         , log consolePort ("Bot '" ++ Elmegram.getDisplayName self ++ "' running.")
         ]
     )
 
 
+processUpdates : Result Http.Error (List Telegram.Update) -> Msg botMsg
+processUpdates result =
+    case result of
+        Ok updates ->
+            NewUpdates updates
 
--- TELEGRAM API
-
-
-getMe : Token -> (Result Http.Error Telegram.User -> msg) -> Cmd msg
-getMe token tagger =
-    Http.get
-        { url = getMeUrl token |> Url.toString
-        , expect = Http.expectJson tagger (Decode.field "result" Telegram.decodeUser)
-        }
-
-
-getMeUrl : Token -> Url
-getMeUrl =
-    getMethodUrl "getMe"
-
-
-deleteWebhook : Token -> (Result String () -> msg) -> Cmd msg
-deleteWebhook token tagger =
-    Http.post
-        { url = deleteWebhookUrl token |> Url.toString
-        , expect =
-            Http.expectJson
-                (\result ->
-                    Result.mapError httpErrorToString result
-                        |> Result.andThen
-                            (\response ->
-                                if response.ok then
-                                    Ok ()
-
-                                else
-                                    case response.description of
-                                        Just description ->
-                                            Err ("Response JSON indicated error:\n" ++ description)
-
-                                        Nothing ->
-                                            Err "Response JSON indicated error, but no description was given."
-                            )
-                        |> tagger
-                )
-                (Decode.map2 (\ok description -> { ok = ok, description = description })
-                    (Decode.field "ok" Decode.bool)
-                    (Decode.maybe (Decode.field "description" Decode.string))
-                )
-        , body = Http.emptyBody
-        }
-
-
-deleteWebhookUrl : Token -> Url
-deleteWebhookUrl =
-    getMethodUrl "deleteWebhook"
-
-
-getUpdates : Token -> Int -> Cmd (Msg msg)
-getUpdates token offset =
-    Http.post
-        { url = getUpdatesUrl token |> Url.toString
-        , expect =
-            Http.expectJson
-                (\result ->
-                    case result of
-                        Ok updates ->
-                            NewUpdates updates
-
-                        Err error ->
-                            InvalidUpdate (httpErrorToString error)
-                )
-                (Decode.field "result" <| Decode.list Telegram.decodeUpdate)
-        , body =
-            Http.jsonBody
-                (Encode.object
-                    [ ( "offset", Encode.int offset )
-                    ]
-                )
-        }
-
-
-getUpdatesUrl : Token -> Url
-getUpdatesUrl =
-    getMethodUrl "getUpdates"
-
-
-getMethodUrl : String -> Token -> Url
-getMethodUrl method token =
-    let
-        baseUrl =
-            getBaseUrl token
-    in
-    { baseUrl | path = baseUrl.path ++ "/" ++ method }
-
-
-getBaseUrl : Token -> Url
-getBaseUrl token =
-    { protocol = Url.Https
-    , host = "api.telegram.org"
-    , port_ = Nothing
-    , path = "/bot" ++ stringFromToken token
-    , query = Nothing
-    , fragment = Nothing
-    }
+        Err error ->
+            InvalidUpdate (httpErrorToString error)
 
 
 
@@ -227,12 +92,12 @@ getBaseUrl token =
 
 
 type Msg botMsg
-    = DeletedWebhook Token (Result String ())
-    | Init Token (Result Http.Error Telegram.User)
+    = DeletedWebhook Telegram.Token (Result String ())
+    | Init Telegram.Token (Result Http.Error Telegram.User)
     | NewUpdates (List Telegram.Update)
     | InvalidUpdate String
     | BotMsg botMsg
-    | SentMethod Bot.Method (Result String String)
+    | SentMethod Bot.Method (Result String ())
 
 
 update :
@@ -246,7 +111,7 @@ update bot consolePort msg runnerModel =
         DeletedWebhook token result ->
             case result of
                 Ok _ ->
-                    ( Initializing, getMe token (Init token) )
+                    ( Initializing, Telegram.getMe token (Init token) )
 
                 Err error ->
                     ( Errored, logError consolePort error )
@@ -280,7 +145,7 @@ update bot consolePort msg runnerModel =
                                 in
                                 Cmd.batch
                                     [ cmd
-                                    , getUpdates model.token offset
+                                    , Telegram.getUpdates model.token offset processUpdates
                                     ]
                             )
 
@@ -360,7 +225,7 @@ updateFromStep consolePort model step =
     ( Running newModel, cmd )
 
 
-sendMethod : ConsolePort (Msg botMsg) -> Token -> Bot.Method -> Cmd (Msg botMsg)
+sendMethod : ConsolePort (Msg botMsg) -> Telegram.Token -> Bot.Method -> Cmd (Msg botMsg)
 sendMethod consolePort token method =
     let
         { methodName, content } =
@@ -390,9 +255,37 @@ sendMethod consolePort token method =
     in
     Cmd.batch
         [ log consolePort ("Called " ++ methodName ++ " with:\n" ++ Encode.encode 2 content)
-        , Http.post
-            { url = getMethodUrl methodName token |> Url.toString
-            , body = Http.jsonBody content
-            , expect = Http.expectStringResponse (SentMethod method) parseSendMethodResponse
-            }
+        , Bot.sendMethod token method (SentMethod method)
         ]
+
+
+
+-- CONSOLE
+
+
+type alias ConsolePort msg =
+    { level : String, message : String } -> Cmd msg
+
+
+log : ConsolePort msg -> String -> Cmd msg
+log consolePort message =
+    outputToConsole consolePort <| Runner.Log Runner.Info message
+
+
+logError : ConsolePort msg -> String -> Cmd msg
+logError consolePort message =
+    outputToConsole consolePort <| Runner.Log Runner.Error message
+
+
+outputToConsole : ConsolePort msg -> Runner.Log -> Cmd msg
+outputToConsole consolePort l =
+    let
+        levelString =
+            case l.level of
+                Runner.Info ->
+                    "log"
+
+                Runner.Error ->
+                    "error"
+    in
+    consolePort { level = levelString, message = l.message }
