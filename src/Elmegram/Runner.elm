@@ -13,8 +13,20 @@ import Telegram
 import Url exposing (Url)
 
 
+botRunner :
+    Bot model msg
+    -> ConsolePort (Msg msg)
+    -> Platform.Program Encode.Value (Model model) (Msg msg)
+botRunner bot consolePort =
+    Platform.worker
+        { init = init consolePort
+        , update = update bot consolePort
+        , subscriptions = \_ -> Sub.none
+        }
 
--- INTERFACE
+
+
+-- CONSOLE
 
 
 type alias ConsolePort msg =
@@ -31,18 +43,6 @@ logError console message =
     console { level = "error", message = message }
 
 
-botRunner :
-    Bot model msg
-    -> ConsolePort (Msg msg)
-    -> Platform.Program Encode.Value (Model model) (Msg msg)
-botRunner bot consolePort =
-    Platform.worker
-        { init = init consolePort
-        , update = update bot consolePort
-        , subscriptions = \_ -> Sub.none
-        }
-
-
 
 -- INIT
 
@@ -51,8 +51,10 @@ type alias Token =
     String
 
 
-type alias Model botModel =
-    Maybe (RunningModel botModel)
+type Model botModel
+    = Initializing
+    | Errored
+    | Running (RunningModel botModel)
 
 
 type alias RunningModel botModel =
@@ -69,15 +71,15 @@ init consolePort flags =
     in
     case tokenResult of
         Ok token ->
-            ( Nothing, getMe token (Init token) )
+            ( Initializing, getMe token (Init token) )
 
         Err error ->
-            ( Nothing, logError consolePort <| Decode.errorToString error )
+            ( Errored, logError consolePort <| Decode.errorToString error )
 
 
 initModel : ConsolePort (Msg botMsg) -> Bot.BotInit model botMsg -> Token -> Telegram.User -> ( Model model, Cmd (Msg botMsg) )
 initModel consolePort botInit token self =
-    ( Just
+    ( Running
         { botModel = botInit self |> .model
         , token = token
         }
@@ -114,7 +116,7 @@ getUpdates token offset =
                 (\result ->
                     case result of
                         Ok updates ->
-                            NewUpdate updates
+                            NewUpdates updates
 
                         Err error ->
                             InvalidUpdate (httpErrorToString error)
@@ -160,7 +162,7 @@ getBaseUrl token =
 
 type Msg botMsg
     = Init Token (Result Http.Error Telegram.User)
-    | NewUpdate (List Telegram.Update)
+    | NewUpdates (List Telegram.Update)
     | InvalidUpdate String
     | BotMsg botMsg
     | SentMethod Bot.Method (Result String String)
@@ -172,7 +174,7 @@ update :
     -> Msg botMsg
     -> Model model
     -> ( Model model, Cmd (Msg botMsg) )
-update bot consolePort msg maybeModel =
+update bot consolePort msg runnerModel =
     case msg of
         Init token getMeResult ->
             case getMeResult of
@@ -180,13 +182,13 @@ update bot consolePort msg maybeModel =
                     initModel consolePort bot.init token self
 
                 Err error ->
-                    ( Nothing, logError consolePort ("Error while initializing bot:\n" ++ httpErrorToString error) )
+                    ( Errored, logError consolePort ("Error while initializing bot:\n" ++ httpErrorToString error) )
 
-        NewUpdate updates ->
-            case maybeModel of
-                Just model ->
+        NewUpdates updates ->
+            case runnerModel of
+                Running model ->
                     processUpdates model.token bot model consolePort updates
-                        |> Tuple.mapFirst Just
+                        |> Tuple.mapFirst Running
                         |> Tuple.mapSecond
                             (\cmd ->
                                 Cmd.batch
@@ -198,31 +200,31 @@ update bot consolePort msg maybeModel =
                                     ]
                             )
 
-                Nothing ->
-                    ( Nothing, logError consolePort "Got new update even though bot initialization was unsuccessful." )
+                _ ->
+                    ( runnerModel, logError consolePort "Got new update even though bot initialization was unsuccessful." )
 
         InvalidUpdate error ->
-            ( maybeModel, logError consolePort ("Error while getting update:\n" ++ error) )
+            ( runnerModel, logError consolePort ("Error while getting update:\n" ++ error) )
 
         BotMsg botMsg ->
-            case maybeModel of
-                Just model ->
+            case runnerModel of
+                Running model ->
                     bot.update botMsg model.botModel
                         |> updateFromResponse consolePort model.token
-                        |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
+                        |> Tuple.mapFirst (\botModel -> Running { model | botModel = botModel })
 
-                Nothing ->
-                    ( Nothing, logError consolePort "Got bot message even though bot initialization was unsuccessful." )
+                _ ->
+                    ( runnerModel, logError consolePort "Got bot message even though bot initialization was unsuccessful." )
 
         SentMethod method result ->
             case result of
                 Ok _ ->
-                    ( maybeModel
+                    ( runnerModel
                     , Cmd.none
                     )
 
                 Err error ->
-                    ( Nothing
+                    ( runnerModel
                     , let
                         { methodName, content } =
                             Bot.encodeMethod method
@@ -266,8 +268,8 @@ processUpdates :
     -> ( RunningModel botModel, Cmd (Msg botMsg) )
 processUpdates token bot model consolePort updates =
     List.foldl
-        (\newUpdate ( previousModel, previousCmd ) ->
-            processUpdate bot.newUpdateMsg bot.update previousModel newUpdate
+        (\newUpdates ( previousModel, previousCmd ) ->
+            processUpdate bot.newUpdateMsg bot.update previousModel newUpdates
                 |> updateFromResponse consolePort token
         )
         ( model.botModel, Cmd.none )
@@ -292,8 +294,8 @@ processUpdate :
     -> botModel
     -> Telegram.Update
     -> Bot.Response botModel botMsg
-processUpdate botNewUpdateMsg botUpdate model newUpdate =
-    botUpdate (botNewUpdateMsg newUpdate) model
+processUpdate botNewUpdatesMsg botUpdate model newUpdates =
+    botUpdate (botNewUpdatesMsg newUpdates) model
 
 
 updateFromResponse : ConsolePort (Msg botMsg) -> Token -> Bot.Response model botMsg -> ( model, Cmd (Msg botMsg) )
