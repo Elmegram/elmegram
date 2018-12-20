@@ -1,8 +1,9 @@
 module Elmegram.Runner exposing
-    ( ErrorPort
+    ( ConsolePort
     , botRunner
     )
 
+import Elmegram
 import Elmegram.Bot as Bot exposing (Bot)
 import Http
 import Json.Decode as Decode
@@ -16,18 +17,28 @@ import Url exposing (Url)
 -- INTERFACE
 
 
-type alias ErrorPort msg =
-    String -> Cmd msg
+type alias ConsolePort msg =
+    { level : String, message : String } -> Cmd msg
+
+
+log : ConsolePort msg -> String -> Cmd msg
+log console message =
+    console { level = "log", message = message }
+
+
+logError : ConsolePort msg -> String -> Cmd msg
+logError console message =
+    console { level = "error", message = message }
 
 
 botRunner :
     Bot model msg
-    -> ErrorPort (Msg msg)
+    -> ConsolePort (Msg msg)
     -> Platform.Program Encode.Value (Model model) (Msg msg)
-botRunner bot errorPort =
+botRunner bot consolePort =
     Platform.worker
-        { init = init errorPort
-        , update = update bot errorPort
+        { init = init consolePort
+        , update = update bot consolePort
         , subscriptions = \_ -> Sub.none
         }
 
@@ -50,8 +61,8 @@ type alias RunningModel botModel =
     }
 
 
-init : ErrorPort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMsg) )
-init errorPort flags =
+init : ConsolePort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMsg) )
+init consolePort flags =
     let
         tokenResult =
             Decode.decodeValue (Decode.field "token" Decode.string) flags
@@ -61,16 +72,19 @@ init errorPort flags =
             ( Nothing, getMe token (Init token) )
 
         Err error ->
-            ( Nothing, errorPort <| Decode.errorToString error )
+            ( Nothing, logError consolePort <| Decode.errorToString error )
 
 
-initModel : Bot.BotInit model msg -> Token -> Telegram.User -> ( Model model, Cmd (Msg botMsg) )
-initModel botInit token self =
+initModel : ConsolePort (Msg botMsg) -> Bot.BotInit model botMsg -> Token -> Telegram.User -> ( Model model, Cmd (Msg botMsg) )
+initModel consolePort botInit token self =
     ( Just
         { botModel = botInit self |> .model
         , token = token
         }
-    , getUpdates token 0 NewUpdate
+    , Cmd.batch
+        [ getUpdates token 0
+        , log consolePort ("Bot '" ++ Elmegram.getDisplayName self ++ "' running.")
+        ]
     )
 
 
@@ -91,11 +105,21 @@ getMeUrl token =
     getMethodUrl token "getMe"
 
 
-getUpdates : Token -> Int -> (Result Http.Error (List Telegram.Update) -> msg) -> Cmd msg
-getUpdates token offset tagger =
+getUpdates : Token -> Int -> Cmd (Msg msg)
+getUpdates token offset =
     Http.post
         { url = getUpdatesUrl token |> Url.toString
-        , expect = Http.expectJson tagger (Decode.field "result" <| Decode.list Telegram.decodeUpdate)
+        , expect =
+            Http.expectJson
+                (\result ->
+                    case result of
+                        Ok updates ->
+                            NewUpdate updates
+
+                        Err error ->
+                            InvalidUpdate (httpErrorToString error)
+                )
+                (Decode.field "result" <| Decode.list Telegram.decodeUpdate)
         , body =
             Http.jsonBody
                 (Encode.object
@@ -136,45 +160,59 @@ getBaseUrl token =
 
 type Msg botMsg
     = Init Token (Result Http.Error Telegram.User)
-    | NewUpdate (Result Http.Error (List Telegram.Update))
+    | NewUpdate (List Telegram.Update)
+    | InvalidUpdate String
     | BotMsg botMsg
     | SentMethod Bot.Method (Result String String)
 
 
 update :
     Bot model botMsg
-    -> ErrorPort (Msg botMsg)
+    -> ConsolePort (Msg botMsg)
     -> Msg botMsg
     -> Model model
     -> ( Model model, Cmd (Msg botMsg) )
-update bot errorPort msg maybeModel =
+update bot consolePort msg maybeModel =
     case msg of
         Init token getMeResult ->
             case getMeResult of
                 Ok self ->
-                    initModel bot.init token self
+                    initModel consolePort bot.init token self
 
                 Err error ->
-                    ( Nothing, errorPort ("Error while initializing bot:\n" ++ httpErrorToString error) )
+                    ( Nothing, logError consolePort ("Error while initializing bot:\n" ++ httpErrorToString error) )
 
-        NewUpdate result ->
+        NewUpdate updates ->
             case maybeModel of
                 Just model ->
-                    processUpdates model.token bot model errorPort result
+                    processUpdates model.token bot model consolePort updates
                         |> Tuple.mapFirst Just
+                        |> Tuple.mapSecond
+                            (\cmd ->
+                                Cmd.batch
+                                    [ log consolePort
+                                        ("Received updates:\n"
+                                            ++ Encode.encode 2 (Encode.list Telegram.encodeUpdate updates)
+                                        )
+                                    , cmd
+                                    ]
+                            )
 
                 Nothing ->
-                    ( Nothing, errorPort "Got new update even though bot initialization was unsuccessful." )
+                    ( Nothing, logError consolePort "Got new update even though bot initialization was unsuccessful." )
+
+        InvalidUpdate error ->
+            ( maybeModel, logError consolePort ("Error while getting update:\n" ++ error) )
 
         BotMsg botMsg ->
             case maybeModel of
                 Just model ->
                     bot.update botMsg model.botModel
-                        |> updateFromResponse model.token
+                        |> updateFromResponse consolePort model.token
                         |> Tuple.mapFirst (\botModel -> Just { model | botModel = botModel })
 
                 Nothing ->
-                    ( Nothing, errorPort "Got bot message even though bot initialization was unsuccessful." )
+                    ( Nothing, logError consolePort "Got bot message even though bot initialization was unsuccessful." )
 
         SentMethod method result ->
             case result of
@@ -189,7 +227,7 @@ update bot errorPort msg maybeModel =
                         { methodName, content } =
                             Bot.encodeMethod method
                       in
-                      errorPort
+                      logError consolePort
                         ("Sending of method was unsuccessful. Reason: "
                             ++ error
                             ++ ".\nMethod was '"
@@ -223,34 +261,29 @@ processUpdates :
     Token
     -> Bot botModel botMsg
     -> RunningModel botModel
-    -> ErrorPort (Msg botMsg)
-    -> Result Http.Error (List Telegram.Update)
+    -> ConsolePort (Msg botMsg)
+    -> List Telegram.Update
     -> ( RunningModel botModel, Cmd (Msg botMsg) )
-processUpdates token bot model errorPort updatesResult =
-    case updatesResult of
-        Ok updates ->
-            List.foldl
-                (\newUpdate ( previousModel, previousCmd ) ->
-                    processUpdate bot.newUpdateMsg bot.update previousModel newUpdate
-                        |> updateFromResponse token
-                )
-                ( model.botModel, Cmd.none )
-                updates
-                |> Tuple.mapFirst (\botModel -> { model | botModel = botModel })
-                |> (let
-                        offset =
-                            case List.last updates of
-                                Just lastUpdate ->
-                                    Telegram.getNextOffset lastUpdate.update_id
+processUpdates token bot model consolePort updates =
+    List.foldl
+        (\newUpdate ( previousModel, previousCmd ) ->
+            processUpdate bot.newUpdateMsg bot.update previousModel newUpdate
+                |> updateFromResponse consolePort token
+        )
+        ( model.botModel, Cmd.none )
+        updates
+        |> Tuple.mapFirst (\botModel -> { model | botModel = botModel })
+        |> (let
+                offset =
+                    case List.last updates of
+                        Just lastUpdate ->
+                            Telegram.getNextOffset lastUpdate.update_id
 
-                                Nothing ->
-                                    0
-                    in
-                    Tuple.mapSecond (\cmd -> Cmd.batch [ cmd, getUpdates token offset NewUpdate ])
-                   )
-
-        Err error ->
-            ( model, errorPort ("Error while processing new updates:\n" ++ httpErrorToString error) )
+                        Nothing ->
+                            0
+            in
+            Tuple.mapSecond (\cmd -> Cmd.batch [ cmd, getUpdates token offset ])
+           )
 
 
 processUpdate :
@@ -263,22 +296,22 @@ processUpdate botNewUpdateMsg botUpdate model newUpdate =
     botUpdate (botNewUpdateMsg newUpdate) model
 
 
-updateFromResponse : Token -> Bot.Response model botMsg -> ( model, Cmd (Msg botMsg) )
-updateFromResponse token response =
-    ( response.model, cmdFromResponse token response )
+updateFromResponse : ConsolePort (Msg botMsg) -> Token -> Bot.Response model botMsg -> ( model, Cmd (Msg botMsg) )
+updateFromResponse consolePort token response =
+    ( response.model, cmdFromResponse consolePort token response )
 
 
-cmdFromResponse : Token -> Bot.Response model botMsg -> Cmd (Msg botMsg)
-cmdFromResponse token response =
+cmdFromResponse : ConsolePort (Msg botMsg) -> Token -> Bot.Response model botMsg -> Cmd (Msg botMsg)
+cmdFromResponse consolePort token response =
     Cmd.batch
         ([ Cmd.map BotMsg response.command
          ]
-            ++ List.map (sendMethod token) response.methods
+            ++ List.map (sendMethod consolePort token) response.methods
         )
 
 
-sendMethod : Token -> Bot.Method -> Cmd (Msg botMsg)
-sendMethod token method =
+sendMethod : ConsolePort (Msg botMsg) -> Token -> Bot.Method -> Cmd (Msg botMsg)
+sendMethod consolePort token method =
     let
         { methodName, content } =
             Bot.encodeMethod method
@@ -305,8 +338,11 @@ sendMethod token method =
                 Http.GoodStatus_ { statusCode } body ->
                     Ok body
     in
-    Http.post
-        { url = getMethodUrl token methodName |> Url.toString
-        , body = Http.jsonBody content
-        , expect = Http.expectStringResponse (SentMethod method) parseSendMethodResponse
-        }
+    Cmd.batch
+        [ log consolePort ("Called " ++ methodName ++ " with:\n" ++ Encode.encode 2 content)
+        , Http.post
+            { url = getMethodUrl token methodName |> Url.toString
+            , body = Http.jsonBody content
+            , expect = Http.expectStringResponse (SentMethod method) parseSendMethodResponse
+            }
+        ]
