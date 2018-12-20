@@ -1,25 +1,25 @@
-module Elmegram.Bot exposing (Bot, BotInit, BotNewUpdateMsg, BotUpdate, Method(..), Response, encodeMethod)
+module Elmegram.Bot exposing (Bot, Init, Method(..), NewUpdateMsg, Response, Update, encodeMethod)
 
 import Json.Encode as Encode
 import Telegram
 
 
 type alias Bot model msg =
-    { init : BotInit model msg
-    , newUpdateMsg : BotNewUpdateMsg msg
-    , update : BotUpdate model msg
+    { init : Init model msg
+    , newUpdateMsg : NewUpdateMsg msg
+    , update : Update model msg
     }
 
 
-type alias BotInit model msg =
+type alias Init model msg =
     Telegram.User -> Response model msg
 
 
-type alias BotNewUpdateMsg msg =
+type alias NewUpdateMsg msg =
     Telegram.Update -> msg
 
 
-type alias BotUpdate model msg =
+type alias Update model msg =
     msg -> model -> Response model msg
 
 
@@ -30,7 +30,7 @@ type alias BotUpdate model msg =
 type alias Response model msg =
     { methods : List Method
     , model : model
-    , command : Cmd msg
+    , cmd : Cmd msg
     }
 
 
