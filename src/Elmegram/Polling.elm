@@ -62,8 +62,18 @@ outputToConsole consolePort l =
 -- INIT
 
 
-type alias Token =
-    String
+type Token
+    = Token String
+
+
+stringFromToken : Token -> String
+stringFromToken (Token token) =
+    token
+
+
+decodeToken : Decode.Decoder Token
+decodeToken =
+    Decode.string |> Decode.map Token
 
 
 type Model botModel
@@ -82,11 +92,11 @@ init : ConsolePort (Msg botMsg) -> Encode.Value -> ( Model model, Cmd (Msg botMs
 init consolePort flags =
     let
         tokenResult =
-            Decode.decodeValue (Decode.field "token" Decode.string) flags
+            Decode.decodeValue (Decode.field "token" decodeToken) flags
     in
     case tokenResult of
         Ok token ->
-            ( Initializing, getMe token (Init token) )
+            ( Initializing, Cmd.batch [ log consolePort "Deleting potential webhook.", deleteWebhook token (DeletedWebhook token) ] )
 
         Err error ->
             ( Errored, logError consolePort <| Decode.errorToString error )
@@ -123,8 +133,44 @@ getMe token tagger =
 
 
 getMeUrl : Token -> Url
-getMeUrl token =
-    getMethodUrl token "getMe"
+getMeUrl =
+    getMethodUrl "getMe"
+
+
+deleteWebhook : Token -> (Result String () -> msg) -> Cmd msg
+deleteWebhook token tagger =
+    Http.post
+        { url = deleteWebhookUrl token |> Url.toString
+        , expect =
+            Http.expectJson
+                (\result ->
+                    Result.mapError httpErrorToString result
+                        |> Result.andThen
+                            (\response ->
+                                if response.ok then
+                                    Ok ()
+
+                                else
+                                    case response.description of
+                                        Just description ->
+                                            Err ("Response JSON indicated error:\n" ++ description)
+
+                                        Nothing ->
+                                            Err "Response JSON indicated error, but no description was given."
+                            )
+                        |> tagger
+                )
+                (Decode.map2 (\ok description -> { ok = ok, description = description })
+                    (Decode.field "ok" Decode.bool)
+                    (Decode.maybe (Decode.field "description" Decode.string))
+                )
+        , body = Http.emptyBody
+        }
+
+
+deleteWebhookUrl : Token -> Url
+deleteWebhookUrl =
+    getMethodUrl "deleteWebhook"
 
 
 getUpdates : Token -> Int -> Cmd (Msg msg)
@@ -152,12 +198,12 @@ getUpdates token offset =
 
 
 getUpdatesUrl : Token -> Url
-getUpdatesUrl token =
-    getMethodUrl token "getUpdates"
+getUpdatesUrl =
+    getMethodUrl "getUpdates"
 
 
-getMethodUrl : Token -> String -> Url
-getMethodUrl token method =
+getMethodUrl : String -> Token -> Url
+getMethodUrl method token =
     let
         baseUrl =
             getBaseUrl token
@@ -165,12 +211,12 @@ getMethodUrl token method =
     { baseUrl | path = baseUrl.path ++ "/" ++ method }
 
 
-getBaseUrl : String -> Url
+getBaseUrl : Token -> Url
 getBaseUrl token =
     { protocol = Url.Https
     , host = "api.telegram.org"
     , port_ = Nothing
-    , path = "/bot" ++ token
+    , path = "/bot" ++ stringFromToken token
     , query = Nothing
     , fragment = Nothing
     }
@@ -181,7 +227,8 @@ getBaseUrl token =
 
 
 type Msg botMsg
-    = Init Token (Result Http.Error Telegram.User)
+    = DeletedWebhook Token (Result String ())
+    | Init Token (Result Http.Error Telegram.User)
     | NewUpdates (List Telegram.Update)
     | InvalidUpdate String
     | BotMsg botMsg
@@ -196,6 +243,14 @@ update :
     -> ( Model model, Cmd (Msg botMsg) )
 update bot consolePort msg runnerModel =
     case msg of
+        DeletedWebhook token result ->
+            case result of
+                Ok _ ->
+                    ( Initializing, getMe token (Init token) )
+
+                Err error ->
+                    ( Errored, logError consolePort error )
+
         Init token getMeResult ->
             case getMeResult of
                 Ok self ->
@@ -336,7 +391,7 @@ sendMethod consolePort token method =
     Cmd.batch
         [ log consolePort ("Called " ++ methodName ++ " with:\n" ++ Encode.encode 2 content)
         , Http.post
-            { url = getMethodUrl token methodName |> Url.toString
+            { url = getMethodUrl methodName token |> Url.toString
             , body = Http.jsonBody content
             , expect = Http.expectStringResponse (SentMethod method) parseSendMethodResponse
             }
