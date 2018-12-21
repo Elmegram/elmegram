@@ -131,7 +131,15 @@ update bot consolePort msg runnerModel =
             case runnerModel of
                 Running model ->
                     Runner.newUpdates bot updates model.botModel
-                        |> updateFromStep consolePort model
+                        |> Runner.updateFromStep
+                            model.token
+                            { log = outputToConsole consolePort
+                            , botMsg = BotMsg
+                            , methodSent = SentMethod
+                            }
+                            model.botModel
+                        |> Tuple.mapFirst
+                            (\botModel -> Running <| { model | botModel = botModel })
                         |> Tuple.mapSecond
                             (\cmd ->
                                 let
@@ -156,7 +164,15 @@ update bot consolePort msg runnerModel =
             case runnerModel of
                 Running model ->
                     Runner.update bot botMsg model.botModel
-                        |> updateFromStep consolePort model
+                        |> Runner.updateFromStep
+                            model.token
+                            { log = outputToConsole consolePort
+                            , botMsg = BotMsg
+                            , methodSent = SentMethod
+                            }
+                            model.botModel
+                        |> Tuple.mapFirst
+                            (\botModel -> Running <| { model | botModel = botModel })
 
                 _ ->
                     ( runnerModel, logError consolePort "Got bot message even though bot initialization was unsuccessful." )
@@ -202,61 +218,6 @@ httpErrorToString error =
 
         Http.BadBody bodyError ->
             "Response body had an issue:\n" ++ bodyError
-
-
-updateFromStep :
-    ConsolePort (Msg botMsg)
-    -> RunningModel botModel
-    -> Runner.Step botModel botMsg
-    -> ( Model botModel, Cmd (Msg botMsg) )
-updateFromStep consolePort model step =
-    let
-        newModel =
-            { model | botModel = step.model }
-
-        cmd =
-            Cmd.batch
-                (List.map (outputToConsole consolePort) step.logs
-                    ++ List.map (sendMethod consolePort model.token) step.methods
-                    ++ [ Cmd.map BotMsg step.cmd
-                       ]
-                )
-    in
-    ( Running newModel, cmd )
-
-
-sendMethod : ConsolePort (Msg botMsg) -> Telegram.Token -> Bot.Method -> Cmd (Msg botMsg)
-sendMethod consolePort token method =
-    let
-        { methodName, content } =
-            Bot.encodeMethod method
-
-        parseSendMethodResponse response =
-            case response of
-                Http.BadUrl_ url ->
-                    Err <| httpErrorToString (Http.BadUrl url)
-
-                Http.Timeout_ ->
-                    Err <| httpErrorToString Http.Timeout
-
-                Http.NetworkError_ ->
-                    Err <| httpErrorToString Http.NetworkError
-
-                Http.BadStatus_ { statusCode } body ->
-                    case Decode.decodeString (Decode.field "description" Decode.string) body of
-                        Ok description ->
-                            Err description
-
-                        Err err ->
-                            Err (Decode.errorToString err)
-
-                Http.GoodStatus_ { statusCode } body ->
-                    Ok body
-    in
-    Cmd.batch
-        [ log consolePort ("Called " ++ methodName ++ " with:\n" ++ Encode.encode 2 content)
-        , Bot.sendMethod token method (SentMethod method)
-        ]
 
 
 
