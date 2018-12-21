@@ -1,8 +1,11 @@
-module Elmegram.Runner exposing (Log, LogLevel(..), Step, newUpdates, update)
+module Elmegram.Runner exposing (Log, LogLevel(..), Step, newUpdates, update, updateFromStep)
 
 import Elmegram.Bot as Bot
+import Http
+import Json.Decode as Decode
 import Json.Encode as Encode
 import Telegram
+import Telegram.Methods as Telegram
 
 
 newUpdates :
@@ -69,6 +72,41 @@ stepFromResponse response =
     , methods = response.methods
     , logs = []
     }
+
+
+updateFromStep :
+    Telegram.Token
+    ->
+        { log : Log -> Cmd msg
+        , botMsg : botMsg -> msg
+        , methodSent : Bot.Method -> Result String () -> msg
+        }
+    -> botModel
+    -> Step botModel botMsg
+    -> ( botModel, Cmd msg )
+updateFromStep token { log, botMsg, methodSent } model step =
+    let
+        cmd =
+            Cmd.batch
+                (List.map log step.logs
+                    ++ List.map (sendMethod log methodSent token) step.methods
+                    ++ [ Cmd.map botMsg step.cmd
+                       ]
+                )
+    in
+    ( model, cmd )
+
+
+sendMethod : (Log -> Cmd msg) -> (Bot.Method -> Result String () -> msg) -> Telegram.Token -> Bot.Method -> Cmd msg
+sendMethod log methodTagger token method =
+    let
+        { methodName, content } =
+            Bot.encodeMethod method
+    in
+    Cmd.batch
+        [ log (Log Info ("Called " ++ methodName ++ " with:\n" ++ Encode.encode 2 content))
+        , Bot.sendMethod token method (methodTagger method)
+        ]
 
 
 
