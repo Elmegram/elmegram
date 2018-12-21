@@ -12,6 +12,8 @@ module Elmegram exposing
     , makeInputMessage
     , makeInputMessageFormatted
     , makeMinimalInlineQueryResultArticle
+    , makeReply
+    , makeReplyFormatted
     , matchesCommand
     )
 
