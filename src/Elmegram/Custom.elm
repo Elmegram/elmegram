@@ -70,7 +70,7 @@ init consolePort flags =
     in
     case tokenResult of
         Ok token ->
-            ( Initializing, Cmd.batch [ log consolePort "Deleting potential webhook.", Telegram.getMe token (Init token) ] )
+            ( Initializing, Telegram.getMe token (Init token) )
 
         Err error ->
             ( Errored, logError consolePort <| Decode.errorToString error )
